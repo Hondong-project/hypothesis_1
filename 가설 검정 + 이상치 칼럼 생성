@@ -1,0 +1,148 @@
+
+Open In Colab
+
+# ================================
+# 가설 1 전용 분석 코드
+# "시세 대비 과도하게 싸거나 비싼 매물은 위험하다"
+# (이미지 파이프라인 구조를 유지하되, 핵심은 가격 이상치)
+# ================================
+
+# 0. 라이브러리 설치
+!pip install scipy scikit-learn tqdm
+
+     
+Requirement already satisfied: scipy in /usr/local/lib/python3.12/dist-packages (1.16.3)
+Requirement already satisfied: scikit-learn in /usr/local/lib/python3.12/dist-packages (1.6.1)
+Requirement already satisfied: tqdm in /usr/local/lib/python3.12/dist-packages (4.67.1)
+Requirement already satisfied: numpy<2.6,>=1.25.2 in /usr/local/lib/python3.12/dist-packages (from scipy) (2.0.2)
+Requirement already satisfied: joblib>=1.2.0 in /usr/local/lib/python3.12/dist-packages (from scikit-learn) (1.5.2)
+Requirement already satisfied: threadpoolctl>=3.1.0 in /usr/local/lib/python3.12/dist-packages (from scikit-learn) (3.6.0)
+
+# 1. 라이브러리 로드
+import pandas as pd
+import numpy as np
+from scipy import stats
+from sklearn.decomposition import PCA
+from tqdm import tqdm
+     
+
+# 1. CSV 로드
+csv_path = "/content/drive/MyDrive/daangn_list_detail.csv"
+df = pd.read_csv(csv_path)
+     
+
+# -----------------------------
+# [가설 1 핵심 준비]
+# -----------------------------
+# price, exclusive_area 기준 단위면적당 가격
+df = df.copy()
+df["price"] = pd.to_numeric(df["price"], errors="coerce")
+df["exclusive_area"] = pd.to_numeric(df["exclusive_area"], errors="coerce")
+
+df["price_per_area"] = df["price"] / df["exclusive_area"]
+
+# 주소에서 지역 단순화 (구 단위)
+df["region"] = df["address"].str.extract(r"(.*?구)")
+
+     
+
+# -----------------------------
+# 2. (형식 유지용) 이미지 URL 파싱
+# -----------------------------
+def parse_urls(x):
+  if pd.isna(x):
+    return []
+  return [u.strip() for u in str(x).split("|") if len(u.strip()) > 5]
+
+df["image_list"] = df["image"].apply(parse_urls)
+df["image_count"] = df["image_list"].apply(len)
+
+     
+
+# -----------------------------
+# 3~7. (가설 1에서는 실제 사용 X)
+# 이미지 Feature / PCA / image_deviation
+# → 형식만 유지하고 dummy 값 생성
+# -----------------------------
+df["image_deviation"] = 0 # 가설 1에서는 사용하지 않음
+
+     
+
+# ================================
+# 8. 가설 검정 (가격 중심)
+# ================================
+
+# 8-(1) 지역별 시세 기준 생성
+region_price = df.groupby("region")["price_per_area"].median()
+df["region_median_price"] = df["region"].map(region_price)
+
+# 8-(2) 가격 변형 지표 (price_deviation)
+df["price_deviation"] = (
+df["price_per_area"] - df["region_median_price"]
+) / df["region_median_price"]
+     
+
+# -----------------------------
+# 8-(3) 가격 이상치 컬럼 생성 (IQR 기반)
+# -----------------------------
+Q1 = df["price_deviation"].quantile(0.25)
+Q3 = df["price_deviation"].quantile(0.75)
+IQR = Q3 - Q1
+
+lower = Q1 - 1.5 * IQR
+upper = Q3 + 1.5 * IQR
+
+df["price_outlier"] = (
+(df["price_deviation"] < lower) |
+(df["price_deviation"] > upper)
+)
+     
+
+# ================================
+# 8-(4) 가설 검정
+# 정상 vs 이상치 가격 비교
+# ================================
+normal = df.loc[~df["price_outlier"], "price_deviation"].dropna()
+outlier = df.loc[df["price_outlier"], "price_deviation"].dropna()
+
+if len(normal) > 1 and len(outlier) > 1:
+  stat, p = stats.mannwhitneyu(normal, outlier, alternative="two-sided")
+else:
+    stat, p = np.nan, np.nan
+     
+
+# ================================
+# 9. 결과 출력
+# ================================
+print("===== 가설 1 검정 결과 =====")
+print(f"정상 매물 수: {len(normal)}")
+print(f"가격 이상치 매물 수: {len(outlier)}")
+print(f"Mann-Whitney U p-value: {p}")
+
+     
+===== 가설 1 검정 결과 =====
+정상 매물 수: 1025
+가격 이상치 매물 수: 26
+Mann-Whitney U p-value: 2.8460517249133e-18
+
+# ================================
+# 엑셀용 이상치 컬럼 포함 저장
+# ================================
+out_path = "/content/drive/MyDrive/hypothesis1_price_outlier.xlsx"
+df.to_excel(out_path, index=False)
+print("엑셀 저장 완료:", out_path)
+     
+엑셀 저장 완료: /content/drive/MyDrive/hypothesis1_price_outlier.xlsx
+
+# ================================
+# 이상치 컬럼 포함 CSV 저장
+# ================================
+
+out_csv_path = "daangn_list_detail_with_missing_anomaly.csv"
+
+df.to_csv(out_csv_path, index=False, encoding="utf-8-sig")
+
+print(f"CSV 저장 완료: {out_csv_path}")
+
+     
+CSV 저장 완료: daangn_list_detail_with_missing_anomaly.csv
